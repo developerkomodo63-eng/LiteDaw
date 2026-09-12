@@ -3,11 +3,23 @@
 MainComponent::MainComponent()
     : mixer(pluginHost, audioEngine)
 {
+    // Escuchar cambios del dispositivo (tipo, buffer, sample rate) para
+    // mantener latencyLabel al día sin sondearlo en cada frame del timer
+    // -que sería trabajo desperdiciado la inmensa mayoría del tiempo-.
+    deviceManager.addChangeListener(this);
+
     // Pedimos entrada de audio (antes era 0 in / 2 out): sin esto la
     // interfaz nunca entrega señal de entrada, sin importar qué tan
     // bajo esté el buffer. Si la interfaz tiene más de 2 entradas, se
     // pueden habilitar el resto desde "Audio/MIDI...".
     deviceManager.initialiseWithDefaultDevices(2, 2);
+
+    // Elegir el tipo de dispositivo de menor latencia disponible ANTES de
+    // fijar el tamaño de buffer: no tiene sentido optimizar el buffer si
+    // seguimos en un driver que de por sí agrega decenas de ms (ej.
+    // DirectSound en vez de WASAPI exclusivo, o compilar con soporte ASIO
+    // -ver CMakeLists.txt- si el usuario tiene un driver ASIO instalado).
+    selectLowestLatencyDeviceType();
     configureLowLatencyDefaults();
     enableAllMidiInputs();
 
@@ -50,6 +62,12 @@ MainComponent::MainComponent()
     addAndMakeVisible(audioSettingsButton);
     audioSettingsButton.onClick = [this] { openAudioSettings(); };
 
+    latencyLabel.setJustificationType(juce::Justification::centredRight);
+    latencyLabel.setFont(juce::Font(12.0f));
+    latencyLabel.setColour(juce::Label::textColourId, juce::Colours::lightgrey);
+    addAndMakeVisible(latencyLabel);
+    updateLatencyLabel();
+
     setSize(1100, 650);
 
     // 15 fps para meters y playhead: de sobra visualmente, barato en CPU.
@@ -59,6 +77,7 @@ MainComponent::MainComponent()
 MainComponent::~MainComponent()
 {
     stopTimer();
+    deviceManager.removeChangeListener(this);
     deviceManager.removeAudioCallback(&audioEngine);
 
     // Sacar los callbacks MIDI antes de que audioEngine se destruya (el
@@ -95,6 +114,8 @@ void MainComponent::resized()
     toolbar.removeFromLeft(12);
     audioSettingsButton.setBounds(toolbar.removeFromLeft(110));
 
+    latencyLabel.setBounds(toolbar);
+
     playlist.setBounds(area.removeFromTop(area.getHeight() * 6 / 10));
     mixer.setBounds(area);
 }
@@ -103,6 +124,88 @@ void MainComponent::timerCallback()
 {
     playlist.setPlayheadSeconds(audioEngine.getPlayheadSeconds());
     mixer.refreshMeters();
+}
+
+void MainComponent::changeListenerCallback(juce::ChangeBroadcaster*)
+{
+    // deviceManager avisa acá cualquier cambio de dispositivo, tipo,
+    // sample rate o buffer -incluidos los que hace el usuario a mano desde
+    // "Audio/MIDI..."-, así que basta con refrescar la etiqueta acá en vez
+    // de sondearla en cada tick del timer de 15fps.
+    updateLatencyLabel();
+}
+
+void MainComponent::updateLatencyLabel()
+{
+    if (auto* device = deviceManager.getCurrentAudioDevice())
+    {
+        const double sampleRate = device->getCurrentSampleRate();
+        const int bufferSamples = device->getCurrentBufferSizeSamples();
+
+        // Estimación de latencia de ida y vuelta: buffer del callback +
+        // la latencia propia que reporte el driver de entrada/salida (en
+        // WASAPI/ASIO suele incluir el "extra" que agrega el driver más
+        // allá del tamaño de buffer pedido). No incluye el delay que
+        // puedan sumar los propios plugins (getLatencySamples()) — ver
+        // limitación en el README.
+        const int roundTripSamples = bufferSamples
+            + device->getOutputLatencyInSamples()
+            + device->getInputLatencyInSamples();
+        const double roundTripMs = sampleRate > 0.0 ? (roundTripSamples * 1000.0 / sampleRate) : 0.0;
+
+        latencyLabel.setText(deviceManager.getCurrentAudioDeviceType()
+                                  + "  ~" + juce::String(roundTripMs, 1) + " ms",
+                              juce::dontSendNotification);
+    }
+    else
+    {
+        latencyLabel.setText("Sin dispositivo de audio", juce::dontSendNotification);
+    }
+}
+
+void MainComponent::selectLowestLatencyDeviceType()
+{
+    // Orden de preferencia pensado para minimizar latencia sin depender de
+    // SDKs propietarios que no vienen en el repo:
+    //  1. ASIO: la mejor opción en Windows, pero solo existe en la lista
+    //     si se compiló con JUCE_ASIO=1 (ver CMakeLists.txt) Y el usuario
+    //     tiene instalado un driver ASIO real (el de su interfaz, o
+    //     ASIO4ALL) — si no, este tipo directamente no aparece acá.
+    //  2. WASAPI en modo exclusivo: evita que el mezclador de Windows
+    //     agregue sus propios buffers extra por encima de los nuestros.
+    //  3. WASAPI compartido: todavía mejor que DirectSound.
+    //  4. DirectSound / CoreAudio / ALSA / JACK: lo que quede.
+    static const char* priorityOrder[] =
+    {
+        "ASIO",
+        "Windows Audio (Exclusive Mode)",
+        "Windows Audio",
+        "DirectSound",
+        "CoreAudio",
+        "JACK",
+        "ALSA"
+    };
+
+    auto& availableTypes = deviceManager.getAvailableDeviceTypes();
+
+    for (auto* wanted : priorityOrder)
+    {
+        for (auto* type : availableTypes)
+        {
+            if (type->getTypeName() == wanted)
+            {
+                // scanForDevices() asegura que el tipo tenga su lista de
+                // dispositivos poblada antes de activarlo -si no, puede
+                // no tener ningún dispositivo por defecto todavía-.
+                type->scanForDevices();
+                if (type->getDeviceNames().isEmpty())
+                    break; // este tipo no tiene ni un dispositivo real; probar el siguiente
+
+                deviceManager.setCurrentAudioDeviceType(type->getTypeName(), true);
+                return;
+            }
+        }
+    }
 }
 
 void MainComponent::configureLowLatencyDefaults()

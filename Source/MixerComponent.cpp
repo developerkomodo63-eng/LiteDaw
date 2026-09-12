@@ -35,7 +35,7 @@ MixerChannel::MixerChannel(juce::String name, int index, PluginHost& host, Audio
     addAndMakeVisible(soloButton);
 
     pluginSlotButton.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff3a3a3a));
-    pluginSlotButton.onClick = [this] { showPluginMenu(); };
+    pluginSlotButton.onClick = [this] { showPluginChainMenu(); };
     addAndMakeVisible(pluginSlotButton);
 
     inputSlotButton.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff2f3a3a));
@@ -75,20 +75,142 @@ void MixerChannel::resized()
     volumeFader.setBounds(area);
 }
 
-void MixerChannel::loadPlugin(const juce::PluginDescription& description)
+// ------------------------------------------------------- Editor de plugin
+
+MixerChannel::PluginEditorWindow::PluginEditorWindow(juce::AudioPluginInstance& pluginToShow,
+                                                       std::function<void()> onCloseCallback)
+    : juce::DocumentWindow(pluginToShow.getName(), juce::Colour(0xff2a2a2a),
+                            juce::DocumentWindow::closeButton)
+    , plugin(&pluginToShow)
+    , onClose(std::move(onCloseCallback))
+{
+    setUsingNativeTitleBar(true);
+
+    // Ya se chequeó hasEditor() antes de crear esta ventana (ver
+    // openPluginEditor), pero por las dudas nunca se llama a un plugin sin
+    // GUI hasta acá; createEditorIfNeeded es lo que realmente paga el
+    // costo de crear la GUI nativa, recién ahora y no antes.
+    if (auto* editor = pluginToShow.createEditorIfNeeded())
+        setContentOwned(editor, true);
+    else
+        setContentOwned(new juce::Label({}, "Este plugin no tiene interfaz grafica propia."), true);
+
+    setResizable(true, false);
+    centreWithSize(getWidth(), getHeight());
+    setVisible(true);
+}
+
+void MixerChannel::PluginEditorWindow::closeButtonPressed()
+{
+    // Dispara el callback del dueño (MixerChannel), que borra este objeto
+    // de openEditorWindows -y con eso, a este mismo objeto- desde afuera.
+    // Es seguro: después de esta llamada no se vuelve a tocar ningún
+    // miembro de la ventana.
+    if (onClose)
+        onClose();
+}
+
+// ---------------------------------------------------------- Cadena por canal
+
+void MixerChannel::addPluginToChain(const juce::PluginDescription& description)
 {
     // Instanciar con el sample rate/block size REALES del dispositivo en
     // uso (no un 44100/1024 fijo): si el usuario bajó la latencia con un
     // buffer más chico o su interfaz corre a otro sample rate, cargar el
     // plugin con los valores equivocados puede sonar mal o directamente
     // agregar latencia extra hasta el próximo prepareToPlay.
-    pluginInstance = pluginHost.createInstance(description,
+    auto instance = pluginHost.createInstance(description,
         audioEngine.getCurrentSampleRate(), audioEngine.getCurrentBlockSize());
-    pluginSlotButton.setButtonText(pluginInstance != nullptr ? description.name : "(error)");
 
-    // El engine solo guarda un puntero crudo (no ownership): el canal
-    // sigue siendo el dueño de la instancia y decide cuándo destruirla.
-    audioEngine.setChannelPlugin(channelIndex, pluginInstance.get());
+    if (instance == nullptr)
+    {
+        juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::WarningIcon,
+            "Plugin", "No se pudo cargar \"" + description.name + "\".");
+        return;
+    }
+
+    // El canal sigue siendo el dueño real de la instancia (pluginChain);
+    // el engine solo recibe punteros crudos vía syncChainToEngine().
+    pluginChain.add(instance.release());
+    syncChainToEngine();
+    updatePluginButtonText();
+}
+
+void MixerChannel::removePluginFromChain(int index)
+{
+    if (index < 0 || index >= pluginChain.size())
+        return;
+
+    auto* plugin = pluginChain.getUnchecked(index);
+
+    // Si la GUI de este plugin está abierta, cerrarla primero: no tiene
+    // sentido dejar una ventana viva apuntando a un AudioProcessor que
+    // está por desaparecer.
+    for (int i = openEditorWindows.size(); --i >= 0;)
+        if (openEditorWindows.getUnchecked(i)->plugin == plugin)
+            openEditorWindows.remove(i);
+
+    plugin->releaseResources();
+    pluginChain.remove(index, true); // true = borra la instancia
+    syncChainToEngine();
+    updatePluginButtonText();
+}
+
+void MixerChannel::movePluginInChain(int index, int delta)
+{
+    const int newIndex = index + delta;
+    if (index < 0 || index >= pluginChain.size() || newIndex < 0 || newIndex >= pluginChain.size())
+        return;
+
+    pluginChain.move(index, newIndex);
+    syncChainToEngine();
+}
+
+void MixerChannel::openPluginEditor(int index)
+{
+    if (index < 0 || index >= pluginChain.size())
+        return;
+
+    auto* plugin = pluginChain.getUnchecked(index);
+
+    // Si ya está abierta la GUI de este plugin, solo traerla al frente en
+    // vez de crear una segunda ventana para la misma instancia.
+    for (auto* win : openEditorWindows)
+    {
+        if (win->plugin == plugin)
+        {
+            win->toFront(true);
+            return;
+        }
+    }
+
+    if (!plugin->hasEditor())
+    {
+        juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::InfoIcon,
+            "Sin GUI", "\"" + plugin->getName() + "\" no tiene interfaz gráfica propia.");
+        return;
+    }
+
+    auto* newWindow = new PluginEditorWindow(*plugin, [this, plugin]
+    {
+        for (int i = openEditorWindows.size(); --i >= 0;)
+            if (openEditorWindows.getUnchecked(i)->plugin == plugin)
+                openEditorWindows.remove(i);
+    });
+    openEditorWindows.add(newWindow);
+}
+
+void MixerChannel::syncChainToEngine()
+{
+    juce::Array<juce::AudioPluginInstance*> rawChain;
+    for (auto* p : pluginChain)
+        rawChain.add(p);
+    audioEngine.setChannelPluginChain(channelIndex, rawChain);
+}
+
+void MixerChannel::updatePluginButtonText()
+{
+    pluginSlotButton.setButtonText("Plugins (" + juce::String(pluginChain.size()) + ")");
 }
 
 void MixerChannel::refreshMeter()
@@ -108,28 +230,42 @@ void MixerChannel::applyState(float gain, bool muted, bool solo)
     audioEngine.setChannelSolo(channelIndex, solo);
 }
 
-void MixerChannel::showPluginMenu()
+void MixerChannel::showPluginChainMenu()
 {
     // Lista lo YA escaneado (PluginHost::getKnownPlugins) — no vuelve a
     // tocar el disco, así que abrir el menú es instantáneo.
     auto descriptions = pluginHost.getKnownPlugins();
 
     juce::PopupMenu menu;
-    if (descriptions.isEmpty())
-    {
-        menu.addItem(1, "Sin plugins escaneados (usa \"Escanear VST3...\")", false);
-    }
-    else
-    {
-        int itemId = 1;
-        for (auto& d : descriptions)
-            menu.addItem(itemId++, d.name);
-    }
 
-    if (pluginInstance != nullptr)
+    // --- Agregar un plugin nuevo al final de la cadena -------------------
+    juce::PopupMenu addMenu;
+    if (descriptions.isEmpty())
+        addMenu.addItem(1, "Sin plugins escaneados (usa \"Escanear VST3...\")", false);
+    else
+        for (int i = 0; i < descriptions.size(); ++i)
+            addMenu.addItem(i + 1, descriptions[i].name);
+    menu.addSubMenu("+ Agregar plugin", addMenu);
+
+    // --- Plugins ya cargados en la cadena, en orden de procesamiento -----
+    // Cada uno tiene su propio submenú con: ver su GUI nativa, subirlo o
+    // bajarlo un lugar en la cadena, o quitarlo del canal. Codificación de
+    // ids: 10000 + índice*10 + acción (1=GUI, 2=subir, 3=bajar, 4=quitar).
+    if (!pluginChain.isEmpty())
     {
         menu.addSeparator();
-        menu.addItem(9000, "Quitar plugin de este canal");
+        for (int i = 0; i < pluginChain.size(); ++i)
+        {
+            juce::PopupMenu itemMenu;
+            const int base = 10000 + i * 10;
+            itemMenu.addItem(base + 1, "Ver GUI", pluginChain.getUnchecked(i)->hasEditor());
+            itemMenu.addItem(base + 2, "Subir en la cadena", i > 0);
+            itemMenu.addItem(base + 3, "Bajar en la cadena", i < pluginChain.size() - 1);
+            itemMenu.addSeparator();
+            itemMenu.addItem(base + 4, "Quitar de este canal");
+
+            menu.addSubMenu(juce::String(i + 1) + ". " + pluginChain.getUnchecked(i)->getName(), itemMenu);
+        }
     }
 
     menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(pluginSlotButton),
@@ -138,22 +274,27 @@ void MixerChannel::showPluginMenu()
             if (result == 0)
                 return;
 
-            if (result == 9000)
+            if (result >= 1 && result <= descriptions.size())
             {
-                unloadPlugin();
+                addPluginToChain(descriptions[result - 1]);
                 return;
             }
 
-            if (result >= 1 && result <= descriptions.size())
-                loadPlugin(descriptions[result - 1]);
-        });
-}
+            if (result >= 10000)
+            {
+                const int index = (result - 10000) / 10;
+                const int action = (result - 10000) % 10;
 
-void MixerChannel::unloadPlugin()
-{
-    pluginInstance.reset();
-    pluginSlotButton.setButtonText("(vacío)");
-    audioEngine.setChannelPlugin(channelIndex, nullptr);
+                switch (action)
+                {
+                    case 1: openPluginEditor(index);        break;
+                    case 2: movePluginInChain(index, -1);   break;
+                    case 3: movePluginInChain(index, +1);   break;
+                    case 4: removePluginFromChain(index);   break;
+                    default: break;
+                }
+            }
+        });
 }
 
 void MixerChannel::showInputMenu()
@@ -241,7 +382,7 @@ void MixerComponent::addTrackChannel(const juce::String& name)
 void MixerComponent::addChannelWithPlugin(const juce::PluginDescription& description)
 {
     auto* newChannel = new MixerChannel(description.name, channels.size(), pluginHost, audioEngine);
-    newChannel->loadPlugin(description);
+    newChannel->addPluginToChain(description);
     channels.add(newChannel);
     channelHolder.addAndMakeVisible(newChannel);
     layoutChannels();

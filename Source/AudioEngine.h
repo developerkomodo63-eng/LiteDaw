@@ -17,16 +17,22 @@
     - Suma la entrada en vivo de la interfaz de audio, si el canal tiene
       una asignada (setChannelInput) — así se puede meter una guitarra o
       un micrófono de la interfaz a un canal del mixer.
-    - Pasa la señal resultante por su plugin VST3 (si tiene uno cargado),
+    - Pasa la señal resultante por la cadena de plugins VST3 del canal
+      (cero, uno o varios, en serie, en el orden en que fueron agregados),
       junto con el MIDI en vivo del bloque.
     - Aplica gain/mute/solo por canal.
     - Calcula un nivel RMS real por canal para los meters del mixer.
 
     Simplificaciones deliberadas (documentadas para no confundirlas con
-    bugs): el puntero al plugin se protege con un juce::SpinLock en vez
+    bugs): la cadena de plugins se protege con un juce::SpinLock en vez
     de un diseño lock-free más elaborado, y los canales "extra" creados
     al escanear plugins (sin pista de playlist asociada) no reciben
-    clips — son slots de instrumento/efecto para uso futuro.
+    clips — son slots de instrumento/efecto para uso futuro. Tampoco hay
+    compensación de latencia entre canales por el delay que puede
+    introducir un plugin (getLatencySamples()): con cadenas cortas y
+    plugins pensados para tocar en vivo esto no suele notarse, pero un
+    plugin con mucho lookahead sí podría desalinearse contra otros
+    canales — ver limitaciones en el README.
 */
 class AudioEngine : public juce::AudioIODeviceCallback,
                     public juce::MidiInputCallback
@@ -69,7 +75,15 @@ public:
 
     // --- Canales ----------------------------------------------------------
     void ensureChannelCount(int numChannels);
-    void setChannelPlugin(int channelIndex, juce::AudioPluginInstance* plugin);
+
+    /** Reemplaza toda la cadena de plugins de un canal, de una sola vez,
+        en el orden en que deben procesarse (el primero de la lista recibe
+        la señal primero). El AudioEngine no es dueño de las instancias
+        -solo guarda punteros crudos-: el canal del mixer sigue siendo el
+        dueño real y decide cuándo destruirlas. Reemplazar la cadena
+        completa (en vez de exponer add/remove/mover acá) evita tener que
+        sincronizar múltiples llamadas bajo lock con la UI. */
+    void setChannelPluginChain(int channelIndex, const juce::Array<juce::AudioPluginInstance*>& chain);
     void setChannelGain(int channelIndex, float linearGain);
     void setChannelMute(int channelIndex, bool shouldMute);
     void setChannelSolo(int channelIndex, bool shouldSolo);
@@ -105,7 +119,11 @@ private:
         std::atomic<bool> solo { false };
         std::atomic<float> level { 0.0f };
         std::atomic<int> inputChannel { -1 }; // -1 = sin entrada en vivo asignada
-        juce::AudioPluginInstance* plugin = nullptr; // no ownership
+
+        // Cadena de plugins del canal, en orden de procesamiento. Sin
+        // ownership (ver setChannelPluginChain); protegida por pluginLock,
+        // igual que antes cuando era un único puntero.
+        juce::Array<juce::AudioPluginInstance*> pluginChain;
     };
 
     juce::AudioFormatManager formatManager;

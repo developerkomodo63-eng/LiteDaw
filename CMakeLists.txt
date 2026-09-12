@@ -55,6 +55,29 @@ target_link_libraries(LiteDAW
         juce::juce_recommended_warning_flags
 )
 
+# --- Soporte opcional de ASIO (menor latencia posible en Windows) -------
+# El SDK de ASIO es propiedad de Steinberg y su licencia no permite
+# redistribuirlo, así que no viene incluido en este repo. Si querés la
+# latencia más baja posible (mejor que WASAPI exclusivo), descargalo de
+# https://www.steinberg.net/developers/ y descomprimilo en
+# ThirdParty/ASIOSDK (o pasá -DASIO_SDK_PATH=... a cmake apuntando a otra
+# carpeta). Si no está presente, la app compila y corre exactamente igual,
+# solo que MainComponent::selectLowestLatencyDeviceType() nunca va a
+# encontrar el tipo "ASIO" en la lista y va a preferir WASAPI en su lugar.
+set(ASIO_SDK_PATH "${CMAKE_SOURCE_DIR}/ThirdParty/ASIOSDK" CACHE PATH
+    "Ruta al SDK de ASIO de Steinberg (opcional, no incluido en el repo)")
+
+if (WIN32 AND EXISTS "${ASIO_SDK_PATH}/common/iasiodrv.h")
+    message(STATUS "LiteDAW: SDK de ASIO encontrado en ${ASIO_SDK_PATH} -> compilando con soporte ASIO")
+    target_compile_definitions(LiteDAW PRIVATE JUCE_ASIO=1)
+    target_include_directories(LiteDAW PRIVATE
+        "${ASIO_SDK_PATH}/common"
+        "${ASIO_SDK_PATH}/host"
+        "${ASIO_SDK_PATH}/host/pc")
+else()
+    message(STATUS "LiteDAW: SDK de ASIO no encontrado (opcional) -> se usará WASAPI/DirectSound")
+endif()
+
 # --- Optimización de tamaño / rendimiento para hardware débil -----------
 if (MSVC)
     target_compile_options(LiteDAW PRIVATE /O2 /GL)

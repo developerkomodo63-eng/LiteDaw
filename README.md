@@ -26,11 +26,15 @@ Ya tiene un motor de audio real, no solo UI de maqueta:
   sobre el `AudioEngine` (no son solo controles visuales).
 - **Botón "+ Pista"**: agrega pista + canal de mixer en simultáneo (van
   1:1 por índice).
-- **Cargar/quitar plugin por canal**: click en el slot de plugin de
-  cualquier canal abre un menú con los plugins ya escaneados y lo asigna
-  a ese canal específicamente (pista o no). "Escanear VST3..." ahora
-  solo puebla la lista una vez — ya no crea un canal por cada plugin
-  encontrado, para no volverse pesado con muchos plugins instalados.
+- **Cadena de plugins por canal**: el slot "Plugins (n)" de cualquier
+  canal abre un menú que deja **agregar más de un plugin** (se procesan
+  en serie, en el orden en que se agregan), **reordenarlos** ("Subir"/
+  "Bajar" en la cadena), **quitarlos** individualmente, y **ver la GUI
+  nativa** de cada uno ("Ver GUI") en una ventana aparte — la ventana solo
+  se crea al pedirla, nunca antes, así que un plugin cuya GUI no se abre
+  nunca no paga ese costo. "Escanear VST3..." solo puebla la lista una
+  vez — no crea un canal por cada plugin encontrado, para no volverse
+  pesado con muchos plugins instalados.
 - **Hosting VST3**: escaneo + instanciación de plugins (`PluginHost`).
 - **Guardar/Abrir proyecto** (`ProjectState`): un XML de texto plano
   (`.litedaw`) con pistas, clips (ruta de archivo, posición, largo) y el
@@ -41,17 +45,18 @@ Ya tiene un motor de audio real, no solo UI de maqueta:
 
 ## Limitaciones conocidas (para no confundirlas con bugs)
 
-1. **Sincronización del plugin con el hilo de audio** usa un
-   `juce::SpinLock` simple al cambiar el puntero del plugin. Es correcto
+1. **Sincronización de la cadena de plugins con el hilo de audio** usa un
+   `juce::SpinLock` simple al reemplazar la cadena completa. Es correcto
    pero no es el diseño más sofisticado (un `AudioProcessorGraph` de JUCE
    sería el camino "canónico" a futuro).
-2. **Sin editor visual de plugin todavía**: el slot carga el plugin y lo
-   deja procesando audio, pero no abre su GUI nativa para tocar
-   parámetros. Se agrega llamando a `pluginInstance->createEditorIfNeeded()`
-   en un `DialogWindow` — pendiente porque la GUI nativa de algunos
-   plugins puede ser pesada, y quisimos evaluarlo con más cuidado.
-3. **Los proyectos no guardan plugins cargados**, solo pistas/clips y
-   gain/mute/solo del mixer (ver arriba, es intencional).
+2. **Sin compensación de latencia entre canales (PDC)**: si un plugin de
+   la cadena reporta `getLatencySamples() > 0` (delay/lookahead interno),
+   ese canal queda desalineado en el tiempo contra los demás. Con cadenas
+   cortas de plugins pensados para tocar en vivo (baja latencia por
+   diseño) esto no suele notarse, pero un plugin de mastering con mucho
+   lookahead sí podría notarse.
+3. **Los proyectos no guardan la cadena de plugins cargada**, solo
+   pistas/clips y gain/mute/solo del mixer (ver arriba, es intencional).
 4. **Sin waveform dibujada**: los clips se ven como bloques de color,
    deliberado para no gastar CPU dibujando/cacheando miles de samples.
 5. **El input asignado por canal no se guarda en el proyecto** (`.litedaw`
@@ -59,6 +64,10 @@ Ya tiene un motor de audio real, no solo UI de maqueta:
    abrir un proyecto hay que reasignar la entrada de interfaz a mano.
 6. **Entrada mono por canal**: el selector de input asigna un solo canal
    físico de la interfaz por canal del mixer (no pares estéreo todavía).
+7. **ASIO no viene incluido**: por licencia, el SDK de Steinberg no se
+   puede redistribuir en este repo. Sin él, la app usa automáticamente el
+   mejor driver disponible sin SDK propietario (WASAPI en modo exclusivo
+   en Windows). Ver el comentario en `CMakeLists.txt` para habilitarlo.
 
 ## Cómo compilar
 
@@ -82,6 +91,20 @@ cmake --build build --config Release
 
 ## Por qué estas decisiones de rendimiento
 
+- **Tipo de driver de audio de menor latencia disponible, elegido solo**:
+  al arrancar, `selectLowestLatencyDeviceType()` recorre los tipos de
+  dispositivo que JUCE tiene disponibles y prioriza ASIO (si se compiló
+  con soporte, ver `CMakeLists.txt`) > WASAPI en modo exclusivo > WASAPI
+  compartido > DirectSound (y CoreAudio/JACK/ALSA en otros sistemas
+  operativos). WASAPI compartido/DirectSound pasan el audio por el
+  mezclador del sistema operativo, que agrega sus propios buffers extra
+  por encima del nuestro — el modo exclusivo (o ASIO) evita eso.
+- **Indicador de latencia real en la barra de herramientas**: muestra el
+  tipo de driver activo y una estimación en ms (buffer + latencia de
+  entrada/salida que reporte el propio driver), para poder confirmar de
+  un vistazo que la configuración actual sirve para tocar en vivo sin
+  tener que abrir "Audio/MIDI..." a adivinar. Se actualiza solo cuando el
+  dispositivo cambia (vía `juce::ChangeListener`), no en cada frame.
 - **Buffer chico por defecto (auto-detectado, con piso de 256 si no hay
   info del dispositivo)**: antes estaba fijo en 1024 muestras
   (~23ms), pensado solo para reproducir pistas ya armadas. Se cambió a
@@ -90,6 +113,15 @@ cmake --build build --config Release
   siente como un delay molesto. El botón "Audio/MIDI..." deja ajustarlo
   a mano (y elegir qué entradas MIDI están activas) si hace falta
   compensar con más estabilidad en un CPU muy limitado.
+- **Cadena de plugins procesada en serie sin copias de MIDI extra**: cada
+  plugin de la cadena de un canal recibe el mismo `MidiBuffer` ya armado
+  para ese bloque (no se copia de nuevo por cada eslabón), para no
+  arriesgar una realocación dentro del callback de audio — la misma razón
+  por la que el resto del motor evita alocar ahí (ver más abajo).
+- **La GUI nativa de un plugin se crea recién al pedirla ("Ver GUI")**,
+  nunca al cargarlo: instanciar el editor de algunos plugins puede ser
+  pesado, y con varios plugins por canal esa GUI casi nunca se abre en
+  medio de un show en vivo.
 - **MIDI en vivo**: `AudioEngine` recolecta los mensajes de cualquier
   entrada MIDI habilitada con `juce::MidiMessageCollector` y se los
   pasa a cada plugin de canal en cada bloque de audio, toque o no el

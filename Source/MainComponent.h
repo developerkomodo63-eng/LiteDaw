@@ -15,7 +15,8 @@
     cada canal del mixer.
 */
 class MainComponent : public juce::Component,
-                       private juce::Timer
+                       private juce::Timer,
+                       private juce::ChangeListener
 {
 public:
     MainComponent();
@@ -26,6 +27,7 @@ public:
 
 private:
     void timerCallback() override;
+    void changeListenerCallback(juce::ChangeBroadcaster*) override;
 
     juce::AudioDeviceManager deviceManager;
 
@@ -42,6 +44,7 @@ private:
     juce::TextButton saveButton        { "Guardar" };
     juce::TextButton openButton        { "Abrir" };
     juce::TextButton audioSettingsButton { "Audio/MIDI..." };
+    juce::Label latencyLabel;
 
     std::unique_ptr<juce::FileChooser> fileChooser;
     std::unique_ptr<juce::DialogWindow> audioSettingsWindow;
@@ -51,9 +54,11 @@ private:
     void addTrackNamed(const juce::String& name);
     void saveProject();
     void loadProject();
+    void selectLowestLatencyDeviceType();
     void configureLowLatencyDefaults();
     void enableAllMidiInputs();
     void openAudioSettings();
+    void updateLatencyLabel();
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MainComponent)
 };

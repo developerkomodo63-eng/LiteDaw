@@ -28,8 +28,9 @@ void AudioEngine::audioDeviceAboutToStart(juce::AudioIODevice* device)
 
     const juce::SpinLock::ScopedLockType lock(pluginLock);
     for (auto* ch : channelStates)
-        if (ch->plugin != nullptr)
-            ch->plugin->prepareToPlay(currentSampleRate, currentBlockSize);
+        for (auto* plugin : ch->pluginChain)
+            if (plugin != nullptr)
+                plugin->prepareToPlay(currentSampleRate, currentBlockSize);
 }
 
 void AudioEngine::audioDeviceStopped()
@@ -40,8 +41,9 @@ void AudioEngine::audioDeviceStopped()
 
     const juce::SpinLock::ScopedLockType lock(pluginLock);
     for (auto* ch : channelStates)
-        if (ch->plugin != nullptr)
-            ch->plugin->releaseResources();
+        for (auto* plugin : ch->pluginChain)
+            if (plugin != nullptr)
+                plugin->releaseResources();
 }
 
 void AudioEngine::handleIncomingMidiMessage(juce::MidiInput* /*source*/, const juce::MidiMessage& message)
@@ -135,11 +137,18 @@ void AudioEngine::audioDeviceIOCallbackWithContext(const float* const* inputChan
         // debería afectar lo que reciben los demás canales.
         channelMidiScratch = incomingMidiScratch;
 
-        // Procesar por el plugin del canal, si tiene uno cargado.
+        // Procesar en serie por la cadena de plugins del canal (si tiene
+        // alguno cargado). Los plugins comparten el mismo channelMidiScratch
+        // a propósito -no se copia de nuevo por cada eslabón- para no
+        // arriesgar una realocación del MidiBuffer dentro del callback de
+        // audio; en la práctica solo el primer plugin de instrumento suele
+        // usar el MIDI, y los efectos que vengan después simplemente lo
+        // ignoran.
         {
             const juce::SpinLock::ScopedLockType lock(pluginLock);
-            if (channelState->plugin != nullptr)
-                channelState->plugin->processBlock(channelBuffer, channelMidiScratch);
+            for (auto* plugin : channelState->pluginChain)
+                if (plugin != nullptr)
+                    plugin->processBlock(channelBuffer, channelMidiScratch);
         }
 
         // Nivel RMS real para el meter.
@@ -206,11 +215,11 @@ void AudioEngine::ensureChannelCount(int numChannels)
         channelStates.add(new ChannelState());
 }
 
-void AudioEngine::setChannelPlugin(int channelIndex, juce::AudioPluginInstance* plugin)
+void AudioEngine::setChannelPluginChain(int channelIndex, const juce::Array<juce::AudioPluginInstance*>& chain)
 {
     ensureChannelCount(channelIndex + 1);
     const juce::SpinLock::ScopedLockType lock(pluginLock);
-    channelStates.getUnchecked(channelIndex)->plugin = plugin;
+    channelStates.getUnchecked(channelIndex)->pluginChain = chain;
 }
 
 void AudioEngine::setChannelGain(int channelIndex, float linearGain)

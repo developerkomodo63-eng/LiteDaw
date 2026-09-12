@@ -3,9 +3,10 @@
 #include "PluginHost.h"
 #include "AudioEngine.h"
 
-/** Un canal individual del mixer: fader, mute, solo y slot de plugin VST3.
-    Todas las acciones del usuario (mover fader, mute, solo, cargar
-    plugin) se reflejan de inmediato en el AudioEngine real. */
+/** Un canal individual del mixer: fader, mute, solo y una cadena de
+    plugins VST3 (cero, uno o varios en serie). Todas las acciones del
+    usuario (mover fader, mute, solo, agregar/quitar/reordenar plugins)
+    se reflejan de inmediato en el AudioEngine real. */
 class MixerChannel : public juce::Component
 {
 public:
@@ -14,7 +15,10 @@ public:
     void paint(juce::Graphics&) override;
     void resized() override;
 
-    void loadPlugin(const juce::PluginDescription& description);
+    /** Agrega un plugin al final de la cadena de este canal (no reemplaza
+        los que ya estén cargados). Se instancia con el sample rate/block
+        size REALES del dispositivo en uso, igual que antes. */
+    void addPluginToChain(const juce::PluginDescription& description);
     void refreshMeter();
 
     float getGain() const { return (float) volumeFader.getValue(); }
@@ -26,8 +30,34 @@ public:
     void applyState(float gain, bool muted, bool solo);
 
 private:
-    void showPluginMenu();
-    void unloadPlugin();
+    /** Ventana nativa para la GUI propia de un plugin. No es dueña de la
+        instancia del plugin -sólo aloja su AudioProcessorEditor mientras
+        la ventana está abierta-: cerrarla no descarga el plugin, el
+        plugin sigue procesando audio en vivo igual. Se crea recién al
+        tocar "Ver GUI", nunca antes de eso: instanciar el editor nativo
+        de un plugin puede ser pesado, y no tiene sentido pagar ese costo
+        para plugins cuya GUI nunca se llega a abrir (ver limitación en
+        el README sobre esto). */
+    class PluginEditorWindow : public juce::DocumentWindow
+    {
+    public:
+        PluginEditorWindow(juce::AudioPluginInstance& pluginToShow, std::function<void()> onCloseCallback);
+        void closeButtonPressed() override;
+
+        juce::AudioPluginInstance* plugin; // sin ownership, para ubicar la ventana de un plugin dado
+
+    private:
+        std::function<void()> onClose;
+
+        JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(PluginEditorWindow)
+    };
+
+    void showPluginChainMenu();
+    void removePluginFromChain(int index);
+    void movePluginInChain(int index, int delta);
+    void openPluginEditor(int index);
+    void syncChainToEngine();
+    void updatePluginButtonText();
     void showInputMenu();
 
     PluginHost& pluginHost;
@@ -38,11 +68,18 @@ private:
     juce::Slider volumeFader { juce::Slider::LinearVertical, juce::Slider::NoTextBox };
     juce::TextButton muteButton { "M" };
     juce::TextButton soloButton { "S" };
-    juce::TextButton pluginSlotButton { "(vacío)" };
+    juce::TextButton pluginSlotButton { "Plugins (0)" };
     juce::TextButton inputSlotButton { "In: -" };
     juce::Label nameLabel;
 
-    std::unique_ptr<juce::AudioPluginInstance> pluginInstance;
+    // Dueño real de las instancias de plugin del canal, en orden de
+    // procesamiento; el AudioEngine solo recibe punteros crudos (ver
+    // AudioEngine::setChannelPluginChain). Declarado ANTES de
+    // openEditorWindows a propósito: los miembros se destruyen en orden
+    // inverso de declaración, así que las ventanas de GUI (que referencian
+    // un plugin) se cierran antes de que el plugin mismo se destruya.
+    juce::OwnedArray<juce::AudioPluginInstance> pluginChain;
+    juce::OwnedArray<PluginEditorWindow> openEditorWindows;
 
     float currentLevel = 0.0f;
 
