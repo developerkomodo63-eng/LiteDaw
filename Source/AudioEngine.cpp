@@ -217,7 +217,7 @@ void AudioEngine::ensureChannelCount(int numChannels)
         channelStates.add(new ChannelState());
 }
 
-void AudioEngine::setChannelPluginChain(int channelIndex, const juce::Array<juce::AudioPluginInstance*>& chain)
+void AudioEngine::setChannelPluginChain(int channelIndex, const juce::Array<PluginSlot>& chain)
 {
     ensureChannelCount(channelIndex + 1);
     const juce::SpinLock::ScopedLockType lock(pluginLock);
