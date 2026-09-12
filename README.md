@@ -29,12 +29,16 @@ Ya tiene un motor de audio real, no solo UI de maqueta:
 - **Cadena de plugins por canal**: el slot "Plugins (n)" de cualquier
   canal abre un menú que deja **agregar más de un plugin** (se procesan
   en serie, en el orden en que se agregan), **reordenarlos** ("Subir"/
-  "Bajar" en la cadena), **quitarlos** individualmente, y **ver la GUI
-  nativa** de cada uno ("Ver GUI") en una ventana aparte — la ventana solo
-  se crea al pedirla, nunca antes, así que un plugin cuya GUI no se abre
-  nunca no paga ese costo. "Escanear VST3..." solo puebla la lista una
-  vez — no crea un canal por cada plugin encontrado, para no volverse
-  pesado con muchos plugins instalados.
+  "Bajar" en la cadena), **quitarlos** individualmente, **ver la GUI
+  nativa** de cada uno ("Ver GUI") en una ventana aparte, y **apagarlos
+  sin quitarlos de la cadena** ("Apagar (bypass)" / "Encender") — útil
+  para comparar el canal con y sin un efecto sin perder los parámetros
+  que ya le ajustaste. El estado se ve de un vistazo: un plugin apagado
+  se marca con "[OFF]" en el propio menú. La ventana de GUI solo se crea
+  al pedirla, nunca antes, así que un plugin cuya GUI no se abre nunca no
+  paga ese costo. "Escanear VST3..." solo puebla la lista una vez — no
+  crea un canal por cada plugin encontrado, para no volverse pesado con
+  muchos plugins instalados.
 - **Hosting VST3**: escaneo + instanciación de plugins (`PluginHost`).
 - **Guardar/Abrir proyecto** (`ProjectState`): un XML de texto plano
   (`.litedaw`) con pistas, clips (ruta de archivo, posición, largo) y el

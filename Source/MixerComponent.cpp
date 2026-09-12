@@ -129,9 +129,25 @@ void MixerChannel::addPluginToChain(const juce::PluginDescription& description)
         return;
     }
 
+    // CRÍTICO: crear la instancia no la deja lista para procesar. El
+    // sampleRate/blockSize que le pasamos arriba a createInstance solo
+    // sirve para instanciarla con esos valores "de referencia" — recién
+    // prepareToPlay() activa de verdad el AudioProcessor (en VST3 esto
+    // dispara IComponent::setActive(true) puertas adentro). El único
+    // lugar que llamaba a prepareToPlay() era
+    // AudioEngine::audioDeviceAboutToStart(), que corre una sola vez al
+    // arrancar el dispositivo de audio — cualquier plugin agregado
+    // DESPUÉS de eso (o sea, casi siempre, ya que el audio arranca apenas
+    // abre la app) nunca quedaba activado y procesaba en silencio, como
+    // si estuviera apagado, aunque su GUI se viera normal.
+    instance->prepareToPlay(audioEngine.getCurrentSampleRate(), audioEngine.getCurrentBlockSize());
+
     // El canal sigue siendo el dueño real de la instancia (pluginChain);
-    // el engine solo recibe punteros crudos vía syncChainToEngine().
-    pluginChain.add(instance.release());
+    // el engine solo recibe punteros crudos + el flag de bypass vía
+    // syncChainToEngine().
+    auto* slot = new LoadedPlugin();
+    slot->instance = std::move(instance);
+    pluginChain.add(slot);
     syncChainToEngine();
     updatePluginButtonText();
 }
@@ -141,7 +157,7 @@ void MixerChannel::removePluginFromChain(int index)
     if (index < 0 || index >= pluginChain.size())
         return;
 
-    auto* plugin = pluginChain.getUnchecked(index);
+    auto* plugin = pluginChain.getUnchecked(index)->instance.get();
 
     // Si la GUI de este plugin está abierta, cerrarla primero: no tiene
     // sentido dejar una ventana viva apuntando a un AudioProcessor que
@@ -151,7 +167,7 @@ void MixerChannel::removePluginFromChain(int index)
             openEditorWindows.remove(i);
 
     plugin->releaseResources();
-    pluginChain.remove(index, true); // true = borra la instancia
+    pluginChain.remove(index, true); // true = borra el LoadedPlugin (y con él, la instancia)
     syncChainToEngine();
     updatePluginButtonText();
 }
@@ -171,7 +187,7 @@ void MixerChannel::openPluginEditor(int index)
     if (index < 0 || index >= pluginChain.size())
         return;
 
-    auto* plugin = pluginChain.getUnchecked(index);
+    auto* plugin = pluginChain.getUnchecked(index)->instance.get();
 
     // Si ya está abierta la GUI de este plugin, solo traerla al frente en
     // vez de crear una segunda ventana para la misma instancia.
@@ -200,11 +216,26 @@ void MixerChannel::openPluginEditor(int index)
     openEditorWindows.add(newWindow);
 }
 
+void MixerChannel::togglePluginBypass(int index)
+{
+    if (index < 0 || index >= pluginChain.size())
+        return;
+
+    // Apagar/prender no recrea ni reconecta nada: solo cambia el flag que
+    // AudioEngine chequea antes de llamar a processBlock de ese eslabón
+    // (ver AudioEngine::PluginSlot). El plugin sigue cargado con su
+    // estado interno intacto, así que "prenderlo" de nuevo no pierde
+    // ningún parámetro que el usuario haya tocado.
+    auto* slot = pluginChain.getUnchecked(index);
+    slot->bypassed = !slot->bypassed;
+    syncChainToEngine();
+}
+
 void MixerChannel::syncChainToEngine()
 {
-    juce::Array<juce::AudioPluginInstance*> rawChain;
-    for (auto* p : pluginChain)
-        rawChain.add(p);
+    juce::Array<AudioEngine::PluginSlot> rawChain;
+    for (auto* slot : pluginChain)
+        rawChain.add({ slot->instance.get(), slot->bypassed });
     audioEngine.setChannelPluginChain(channelIndex, rawChain);
 }
 
@@ -248,23 +279,34 @@ void MixerChannel::showPluginChainMenu()
     menu.addSubMenu("+ Agregar plugin", addMenu);
 
     // --- Plugins ya cargados en la cadena, en orden de procesamiento -----
-    // Cada uno tiene su propio submenú con: ver su GUI nativa, subirlo o
-    // bajarlo un lugar en la cadena, o quitarlo del canal. Codificación de
-    // ids: 10000 + índice*10 + acción (1=GUI, 2=subir, 3=bajar, 4=quitar).
+    // Cada uno tiene su propio submenú con: ver su GUI nativa, bypass
+    // (encendido/apagado), subirlo o bajarlo un lugar en la cadena, o
+    // quitarlo del canal. Codificación de ids: 10000 + índice*10 + acción
+    // (1=GUI, 2=subir, 3=bajar, 4=quitar, 5=bypass).
     if (!pluginChain.isEmpty())
     {
         menu.addSeparator();
         for (int i = 0; i < pluginChain.size(); ++i)
         {
-            juce::PopupMenu itemMenu;
+            auto* slot = pluginChain.getUnchecked(i);
             const int base = 10000 + i * 10;
-            itemMenu.addItem(base + 1, "Ver GUI", pluginChain.getUnchecked(i)->hasEditor());
+
+            juce::PopupMenu itemMenu;
+            itemMenu.addItem(base + 5, slot->bypassed ? "Encender" : "Apagar (bypass)",
+                              true, slot->bypassed);
+            itemMenu.addSeparator();
+            itemMenu.addItem(base + 1, "Ver GUI", slot->instance->hasEditor());
             itemMenu.addItem(base + 2, "Subir en la cadena", i > 0);
             itemMenu.addItem(base + 3, "Bajar en la cadena", i < pluginChain.size() - 1);
             itemMenu.addSeparator();
             itemMenu.addItem(base + 4, "Quitar de este canal");
 
-            menu.addSubMenu(juce::String(i + 1) + ". " + pluginChain.getUnchecked(i)->getName(), itemMenu);
+            // El estado se ve de un vistazo en el propio título del
+            // submenú, sin tener que abrirlo: "[OFF]" cuando está
+            // bypasseado.
+            menu.addSubMenu(juce::String(i + 1) + ". " + slot->instance->getName()
+                                 + (slot->bypassed ? "  [OFF]" : ""),
+                             itemMenu);
         }
     }
 
@@ -291,6 +333,7 @@ void MixerChannel::showPluginChainMenu()
                     case 2: movePluginInChain(index, -1);   break;
                     case 3: movePluginInChain(index, +1);   break;
                     case 4: removePluginFromChain(index);   break;
+                    case 5: togglePluginBypass(index);      break;
                     default: break;
                 }
             }

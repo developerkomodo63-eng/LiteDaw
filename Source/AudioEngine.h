@@ -76,14 +76,24 @@ public:
     // --- Canales ----------------------------------------------------------
     void ensureChannelCount(int numChannels);
 
+    /** Un eslabón de la cadena de plugins de un canal. Sin ownership sobre
+        la instancia -el canal del mixer sigue siendo el dueño real y
+        decide cuándo destruirla-. "bypassed" deja el plugin cargado y con
+        su estado interno intacto, pero saltea su processBlock en cada
+        bloque de audio: es el equivalente a un botón de encendido/apagado
+        por plugin, sin tener que quitarlo de la cadena. */
+    struct PluginSlot
+    {
+        juce::AudioPluginInstance* plugin = nullptr;
+        bool bypassed = false;
+    };
+
     /** Reemplaza toda la cadena de plugins de un canal, de una sola vez,
         en el orden en que deben procesarse (el primero de la lista recibe
-        la señal primero). El AudioEngine no es dueño de las instancias
-        -solo guarda punteros crudos-: el canal del mixer sigue siendo el
-        dueño real y decide cuándo destruirlas. Reemplazar la cadena
-        completa (en vez de exponer add/remove/mover acá) evita tener que
-        sincronizar múltiples llamadas bajo lock con la UI. */
-    void setChannelPluginChain(int channelIndex, const juce::Array<juce::AudioPluginInstance*>& chain);
+        la señal primero). Reemplazar la cadena completa (en vez de
+        exponer add/remove/mover/bypass acá) evita tener que sincronizar
+        múltiples llamadas bajo lock con la UI. */
+    void setChannelPluginChain(int channelIndex, const juce::Array<PluginSlot>& chain);
     void setChannelGain(int channelIndex, float linearGain);
     void setChannelMute(int channelIndex, bool shouldMute);
     void setChannelSolo(int channelIndex, bool shouldSolo);
@@ -120,10 +130,10 @@ private:
         std::atomic<float> level { 0.0f };
         std::atomic<int> inputChannel { -1 }; // -1 = sin entrada en vivo asignada
 
-        // Cadena de plugins del canal, en orden de procesamiento. Sin
-        // ownership (ver setChannelPluginChain); protegida por pluginLock,
-        // igual que antes cuando era un único puntero.
-        juce::Array<juce::AudioPluginInstance*> pluginChain;
+        // Cadena de plugins del canal, en orden de procesamiento;
+        // protegida por pluginLock, igual que antes cuando era un único
+        // puntero.
+        juce::Array<PluginSlot> pluginChain;
     };
 
     juce::AudioFormatManager formatManager;

@@ -56,6 +56,7 @@ private:
     void removePluginFromChain(int index);
     void movePluginInChain(int index, int delta);
     void openPluginEditor(int index);
+    void togglePluginBypass(int index);
     void syncChainToEngine();
     void updatePluginButtonText();
     void showInputMenu();
@@ -72,13 +73,24 @@ private:
     juce::TextButton inputSlotButton { "In: -" };
     juce::Label nameLabel;
 
-    // Dueño real de las instancias de plugin del canal, en orden de
-    // procesamiento; el AudioEngine solo recibe punteros crudos (ver
-    // AudioEngine::setChannelPluginChain). Declarado ANTES de
-    // openEditorWindows a propósito: los miembros se destruyen en orden
-    // inverso de declaración, así que las ventanas de GUI (que referencian
-    // un plugin) se cierran antes de que el plugin mismo se destruya.
-    juce::OwnedArray<juce::AudioPluginInstance> pluginChain;
+    /** Un plugin cargado en la cadena de este canal, con su estado de
+        bypass ("off"). El canal es el dueño real de la instancia; el
+        AudioEngine solo recibe punteros crudos + el flag de bypass (ver
+        AudioEngine::PluginSlot / syncChainToEngine). Usar un solo array
+        de estos en vez de dos arrays paralelos (instancias y bypass por
+        separado) evita que un reordenamiento (Subir/Bajar) desincronice
+        cuál bypass le corresponde a cuál plugin. */
+    struct LoadedPlugin
+    {
+        std::unique_ptr<juce::AudioPluginInstance> instance;
+        bool bypassed = false;
+    };
+
+    // Declarado ANTES de openEditorWindows a propósito: los miembros se
+    // destruyen en orden inverso de declaración, así que las ventanas de
+    // GUI (que referencian un plugin) se cierran antes de que el plugin
+    // mismo se destruya.
+    juce::OwnedArray<LoadedPlugin> pluginChain;
     juce::OwnedArray<PluginEditorWindow> openEditorWindows;
 
     float currentLevel = 0.0f;
