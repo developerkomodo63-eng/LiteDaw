@@ -39,14 +39,19 @@ private:
     juce::TextButton stopButton        { "Stop" };
     juce::TextButton saveButton        { "Guardar" };
     juce::TextButton openButton        { "Abrir" };
+    juce::TextButton audioSettingsButton { "Audio/MIDI..." };
 
     std::unique_ptr<juce::FileChooser> fileChooser;
+    std::unique_ptr<juce::DialogWindow> audioSettingsWindow;
 
     void scanForPlugins();
     void addTrack();
     void addTrackNamed(const juce::String& name);
     void saveProject();
     void loadProject();
+    void configureLowLatencyDefaults();
+    void enableAllMidiInputs();
+    void openAudioSettings();
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MainComponent)
 };

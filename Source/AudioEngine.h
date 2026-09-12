@@ -18,7 +18,8 @@
     al escanear plugins (sin pista de playlist asociada) no reciben
     clips — son slots de instrumento/efecto para uso futuro.
 */
-class AudioEngine : public juce::AudioSource
+class AudioEngine : public juce::AudioSource,
+                    public juce::MidiInputCallback
 {
 public:
     AudioEngine();
@@ -28,6 +29,17 @@ public:
     void prepareToPlay(int samplesPerBlockExpected, double sampleRate) override;
     void releaseResources() override;
     void getNextAudioBlock(const juce::AudioSourceChannelInfo& info) override;
+
+    // --- juce::MidiInputCallback --------------------------------------
+    /** Se registra una vez por dispositivo MIDI (habilitado o no) en
+        MainComponent. Solo encola el mensaje con su timestamp real; el
+        trabajo pesado (repartirlo en el bloque correcto) lo hace
+        MidiMessageCollector desde el hilo de audio. Mantener esto liviano
+        es lo que permite baja latencia con teclados MIDI. */
+    void handleIncomingMidiMessage(juce::MidiInput* source, const juce::MidiMessage& message) override;
+
+    double getCurrentSampleRate() const noexcept { return currentSampleRate; }
+    int getCurrentBlockSize() const noexcept { return currentBlockSize; }
 
     // --- Transporte ---------------------------------------------------
     void play();
@@ -77,6 +89,23 @@ private:
     juce::OwnedArray<ChannelState> channelStates;
 
     juce::SpinLock pluginLock;
+
+    // Recolecta mensajes MIDI entrantes (de cualquier teclado/controlador
+    // habilitado) con timestamp real y los reparte sample-accurate dentro
+    // del bloque de audio actual. Es la pieza que permite tocar en vivo
+    // con latencia baja: sin esto, los plugins de instrumento nunca
+    // reciben notas (ver getNextAudioBlock).
+    juce::MidiMessageCollector midiCollector;
+
+    // Buffers de trabajo pre-alocados en prepareToPlay: reservar memoria
+    // dentro de getNextAudioBlock (hilo de audio de tiempo real) puede
+    // causar clics/xruns, y eso se nota mucho más cuanto más bajo es el
+    // buffer del dispositivo. setSize(..., avoidReallocating=true) hace
+    // que estas llamadas dentro del callback sean gratis mientras el
+    // tamaño pedido entre en lo ya reservado.
+    juce::AudioBuffer<float> channelScratchBuffer;
+    juce::MidiBuffer incomingMidiScratch;
+    juce::MidiBuffer channelMidiScratch;
 
     double currentSampleRate = 44100.0;
     int currentBlockSize = 1024;

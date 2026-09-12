@@ -70,7 +70,13 @@ void MixerChannel::resized()
 
 void MixerChannel::loadPlugin(const juce::PluginDescription& description)
 {
-    pluginInstance = pluginHost.createInstance(description, 44100.0, 1024);
+    // Instanciar con el sample rate/block size REALES del dispositivo en
+    // uso (no un 44100/1024 fijo): si el usuario bajó la latencia con un
+    // buffer más chico o su interfaz corre a otro sample rate, cargar el
+    // plugin con los valores equivocados puede sonar mal o directamente
+    // agregar latencia extra hasta el próximo prepareToPlay.
+    pluginInstance = pluginHost.createInstance(description,
+        audioEngine.getCurrentSampleRate(), audioEngine.getCurrentBlockSize());
     pluginSlotButton.setButtonText(pluginInstance != nullptr ? description.name : "(error)");
 
     // El engine solo guarda un puntero crudo (no ownership): el canal

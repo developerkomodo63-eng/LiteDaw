@@ -2,7 +2,7 @@ name: Build LiteDAW (Windows)
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, master ]
   workflow_dispatch:
 
 jobs:
@@ -20,11 +20,23 @@ jobs:
           ref: master
           path: JUCE
 
+      # windows-latest pasó a apuntar a la imagen con Visual Studio 2026,
+      # que ya no trae instalado VS2022 (por eso fallaba "-G Visual Studio
+      # 17 2022" con "could not find any instance of Visual Studio").
+      # En vez de pinnear a mano una versión de VS que se va a volver a
+      # romper con la próxima migración de imagen, usamos Ninja + este
+      # action, que activa el entorno de compilador de MSVC que sea que
+      # esté instalado en el runner (2022, 2026, o lo que venga después).
+      - name: Setup MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
       - name: Configure (CMake)
-        run: cmake -B build -G "Visual Studio 17 2022" -A x64
+        run: cmake -B build -G "Ninja" -DCMAKE_BUILD_TYPE=Release
 
       - name: Build (Release)
-        run: cmake --build build --config Release --parallel
+        run: cmake --build build --parallel
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

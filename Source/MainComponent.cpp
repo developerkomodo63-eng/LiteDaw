@@ -3,14 +3,9 @@
 MainComponent::MainComponent()
     : mixer(pluginHost, audioEngine)
 {
-    // Buffer grande + sample rate moderado: prioriza estabilidad sobre
-    // latencia ultra baja, ideal para reproducir en una presentación
-    // sin xruns en un CPU limitado.
-    juce::AudioDeviceManager::AudioDeviceSetup setup;
     deviceManager.initialiseWithDefaultDevices(0, 2);
-    deviceManager.getAudioDeviceSetup(setup);
-    setup.bufferSize = 1024;
-    deviceManager.setAudioDeviceSetup(setup, true);
+    configureLowLatencyDefaults();
+    enableAllMidiInputs();
 
     // Conecta el motor real al hardware de audio.
     audioSourcePlayer.setSource(&audioEngine);
@@ -47,6 +42,9 @@ MainComponent::MainComponent()
     addAndMakeVisible(openButton);
     openButton.onClick = [this] { loadProject(); };
 
+    addAndMakeVisible(audioSettingsButton);
+    audioSettingsButton.onClick = [this] { openAudioSettings(); };
+
     setSize(1100, 650);
 
     // 15 fps para meters y playhead: de sobra visualmente, barato en CPU.
@@ -58,6 +56,14 @@ MainComponent::~MainComponent()
     stopTimer();
     audioSourcePlayer.setSource(nullptr);
     deviceManager.removeAudioCallback(&audioSourcePlayer);
+
+    // Sacar los callbacks MIDI antes de que audioEngine se destruya (el
+    // orden de destrucción de miembros deja a audioEngine morir antes que
+    // deviceManager): si no, un mensaje MIDI de último momento podría
+    // llegar a un objeto ya destruido.
+    for (auto& midiInput : juce::MidiInput::getAvailableDevices())
+        deviceManager.removeMidiInputDeviceCallback(midiInput.identifier, &audioEngine);
+
     deviceManager.closeAudioDevice();
 }
 
@@ -82,6 +88,8 @@ void MainComponent::resized()
     saveButton.setBounds(toolbar.removeFromLeft(80));
     toolbar.removeFromLeft(4);
     openButton.setBounds(toolbar.removeFromLeft(80));
+    toolbar.removeFromLeft(12);
+    audioSettingsButton.setBounds(toolbar.removeFromLeft(110));
 
     playlist.setBounds(area.removeFromTop(area.getHeight() * 6 / 10));
     mixer.setBounds(area);
@@ -91,6 +99,80 @@ void MainComponent::timerCallback()
 {
     playlist.setPlayheadSeconds(audioEngine.getPlayheadSeconds());
     mixer.refreshMeters();
+}
+
+void MainComponent::configureLowLatencyDefaults()
+{
+    // Antes: buffer fijo en 1024 muestras (~23ms @44.1kHz), pensado solo
+    // para reproducir pistas ya armadas en una presentación. Eso es
+    // demasiada latencia para tocar un teclado MIDI en vivo o monitorear
+    // un efecto en tiempo real. Elegimos el buffer más chico que el
+    // dispositivo actual soporte, con un piso de seguridad para no caer
+    // en un tamaño tan chico que el propio driver no pueda sostenerlo de
+    // forma estable.
+    juce::AudioDeviceManager::AudioDeviceSetup setup;
+    deviceManager.getAudioDeviceSetup(setup);
+
+    if (auto* device = deviceManager.getCurrentAudioDevice())
+    {
+        auto availableSizes = device->getAvailableBufferSizes();
+        int chosen = device->getDefaultBufferSize();
+
+        for (auto size : availableSizes)
+            if (size >= 32 && size < chosen)
+                chosen = size;
+
+        setup.bufferSize = chosen;
+    }
+    else
+    {
+        setup.bufferSize = 256; // ~5.8ms @44.1kHz, razonable si no hay device info
+    }
+
+    deviceManager.setAudioDeviceSetup(setup, true);
+}
+
+void MainComponent::enableAllMidiInputs()
+{
+    // La app no tenía NINGÚN manejo de MIDI: un teclado conectado no
+    // hacía nada, sin importar la latencia del audio. Habilitamos todos
+    // los dispositivos MIDI de entrada disponibles y registramos el
+    // AudioEngine como callback de cada uno, para que las notas lleguen
+    // en vivo a cualquier plugin de instrumento cargado en un canal.
+    for (auto& midiInput : juce::MidiInput::getAvailableDevices())
+    {
+        if (!deviceManager.isMidiInputDeviceEnabled(midiInput.identifier))
+            deviceManager.setMidiInputDeviceEnabled(midiInput.identifier, true);
+
+        deviceManager.addMidiInputDeviceCallback(midiInput.identifier, &audioEngine);
+    }
+}
+
+void MainComponent::openAudioSettings()
+{
+    // Selector estándar de JUCE: deja elegir dispositivo, sample rate,
+    // tamaño de buffer y qué entradas MIDI están activas, todo desde la
+    // app, sin tener que tocar código para bajar más la latencia.
+    auto* selector = new juce::AudioDeviceSelectorComponent(
+        deviceManager,
+        0, 2,     // canales de entrada de audio (min/max)
+        0, 2,     // canales de salida de audio (min/max)
+        true,     // mostrar selector de entradas MIDI
+        false,    // mostrar selector de salidas MIDI
+        true,     // mostrar canales como pares estéreo
+        false);   // no ocultar opciones avanzadas detrás de un botón
+
+    selector->setSize(500, 450);
+
+    juce::DialogWindow::LaunchOptions options;
+    options.content.setOwned(selector);
+    options.dialogTitle = "Configuración de Audio / MIDI";
+    options.dialogBackgroundColour = juce::Colour(0xff2a2a2a);
+    options.escapeKeyTriggersCloseButton = true;
+    options.useNativeTitleBar = true;
+    options.resizable = true;
+
+    audioSettingsWindow.reset(options.launchAsync());
 }
 
 void MainComponent::scanForPlugins()

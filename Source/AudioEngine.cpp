@@ -13,6 +13,14 @@ void AudioEngine::prepareToPlay(int samplesPerBlockExpected, double sampleRate)
     currentSampleRate = sampleRate;
     currentBlockSize = samplesPerBlockExpected;
 
+    // Reservar de una vez para no alocar en el hilo de audio (ver
+    // declaración de estos miembros en el .h). 8 canales de reserva es de
+    // sobra hoy y barato; si algún día el output tiene más, setSize()
+    // dentro de getNextAudioBlock crecerá el buffer esa única vez.
+    channelScratchBuffer.setSize(juce::jmax(2, 8), samplesPerBlockExpected, false, false, true);
+
+    midiCollector.reset(sampleRate);
+
     for (auto* clip : loadedClips)
         if (clip->readerSource != nullptr)
             clip->readerSource->prepareToPlay(samplesPerBlockExpected, sampleRate);
@@ -21,6 +29,15 @@ void AudioEngine::prepareToPlay(int samplesPerBlockExpected, double sampleRate)
     for (auto* ch : channelStates)
         if (ch->plugin != nullptr)
             ch->plugin->prepareToPlay(sampleRate, samplesPerBlockExpected);
+}
+
+void AudioEngine::handleIncomingMidiMessage(juce::MidiInput* /*source*/, const juce::MidiMessage& message)
+{
+    // Llamado desde el hilo de MIDI de JUCE, no desde el de audio.
+    // addMessageToQueue es thread-safe y no bloquea: es justo lo que
+    // hace falta para no meter latencia extra entre que se toca una
+    // tecla y que el mensaje quede listo para el próximo bloque de audio.
+    midiCollector.addMessageToQueue(message);
 }
 
 void AudioEngine::releaseResources()
@@ -47,45 +64,66 @@ void AudioEngine::getNextAudioBlock(const juce::AudioSourceChannelInfo& info)
 {
     info.clearActiveBufferRegion();
 
-    if (!playing.load())
-        return;
-
     const int numSamples = info.numSamples;
+    const int numOutChannels = info.buffer->getNumChannels();
+    const bool isPlaying = playing.load();
     const auto blockStartSample = playheadSample.load();
     const bool soloActive = anyChannelSoloed();
 
-    // Buffer temporal por canal, reutilizado para cada uno.
-    juce::AudioBuffer<float> channelBuffer(info.buffer->getNumChannels(), numSamples);
-    juce::MidiBuffer emptyMidi;
+    // Buffer temporal reutilizado (ver comentario en el .h): agrandar acá
+    // solo toca memoria si numSamples/numOutChannels superan lo ya
+    // reservado en prepareToPlay, que es el caso normal. Construir un
+    // juce::AudioBuffer nuevo por canal en cada bloque (como antes) es
+    // una alocación de heap en el hilo de audio, y eso es exactamente lo
+    // que produce clics/xruns cuando el buffer del dispositivo es chico.
+    channelScratchBuffer.setSize(juce::jmax(numOutChannels, channelScratchBuffer.getNumChannels()),
+                                  numSamples, false, false, true);
+    juce::AudioBuffer<float> channelBuffer(channelScratchBuffer.getArrayOfWritePointers(),
+                                            numOutChannels, numSamples);
+
+    // MIDI real entrante (teclado/controlador) para este bloque, ya
+    // repartido sample-accurate por MidiMessageCollector. Se procesa
+    // siempre, toque o no el transporte: un instrumento debe sonar en
+    // vivo aunque no se esté reproduciendo la playlist.
+    incomingMidiScratch.clear();
+    midiCollector.removeNextBlockOfMessages(incomingMidiScratch, numSamples);
 
     for (int chIdx = 0; chIdx < channelStates.size(); ++chIdx)
     {
         auto* channelState = channelStates.getUnchecked(chIdx);
         channelBuffer.clear();
 
-        // Sumar todos los clips de esta pista que caen dentro de este bloque.
-        for (auto* clip : loadedClips)
+        if (isPlaying)
         {
-            if (clip->trackIndex != chIdx || clip->readerSource == nullptr)
-                continue;
+            // Sumar todos los clips de esta pista que caen dentro de este bloque.
+            for (auto* clip : loadedClips)
+            {
+                if (clip->trackIndex != chIdx || clip->readerSource == nullptr)
+                    continue;
 
-            auto clipEndSample = clip->startSample + clip->lengthInSamples;
-            if (blockStartSample + numSamples <= clip->startSample || blockStartSample >= clipEndSample)
-                continue; // este clip no suena en este bloque
+                auto clipEndSample = clip->startSample + clip->lengthInSamples;
+                if (blockStartSample + numSamples <= clip->startSample || blockStartSample >= clipEndSample)
+                    continue; // este clip no suena en este bloque
 
-            // Posición dentro del propio archivo (0 = inicio del clip).
-            auto positionInClip = blockStartSample - clip->startSample;
-            clip->readerSource->setNextReadPosition(juce::jmax((juce::int64) 0, positionInClip));
+                // Posición dentro del propio archivo (0 = inicio del clip).
+                auto positionInClip = blockStartSample - clip->startSample;
+                clip->readerSource->setNextReadPosition(juce::jmax((juce::int64) 0, positionInClip));
 
-            juce::AudioSourceChannelInfo clipInfo(&channelBuffer, 0, numSamples);
-            clip->readerSource->getNextAudioBlock(clipInfo);
+                juce::AudioSourceChannelInfo clipInfo(&channelBuffer, 0, numSamples);
+                clip->readerSource->getNextAudioBlock(clipInfo);
+            }
         }
+
+        // Cada canal recibe su propia copia del MIDI del bloque: el
+        // plugin puede modificar/consumir el buffer que se le pasa y no
+        // debería afectar lo que reciben los demás canales.
+        channelMidiScratch = incomingMidiScratch;
 
         // Procesar por el plugin del canal, si tiene uno cargado.
         {
             const juce::SpinLock::ScopedLockType lock(pluginLock);
             if (channelState->plugin != nullptr)
-                channelState->plugin->processBlock(channelBuffer, emptyMidi);
+                channelState->plugin->processBlock(channelBuffer, channelMidiScratch);
         }
 
         // Nivel RMS real para el meter.
@@ -95,13 +133,14 @@ void AudioEngine::getNextAudioBlock(const juce::AudioSourceChannelInfo& info)
         const float gain = channelState->gain.load();
 
         if (audible)
-            for (int c = 0; c < info.buffer->getNumChannels(); ++c)
+            for (int c = 0; c < numOutChannels; ++c)
                 info.buffer->addFrom(c, info.startSample, channelBuffer,
                                      juce::jmin(c, channelBuffer.getNumChannels() - 1),
                                      0, numSamples, gain);
     }
 
-    playheadSample.store(blockStartSample + numSamples);
+    if (isPlaying)
+        playheadSample.store(blockStartSample + numSamples);
 }
 
 void AudioEngine::play()  { playing.store(true); }

@@ -51,7 +51,10 @@ Ya tiene un motor de audio real, no solo UI de maqueta:
 No hace falta compilar localmente en el Stream 14. El workflow
 `.github/workflows/build-windows.yml` compila en un runner de Windows y
 sube el `.exe` como artifact — mismo flujo que ya usás para los plugins
-de Developer Komodo.
+de Developer Komodo. Usa Ninja + `ilammy/msvc-dev-cmd` (en vez de fijar
+un generador tipo "Visual Studio 17 2022") para no depender de qué
+versión de Visual Studio trae instalada la imagen del runner en un
+momento dado.
 
 Si querés compilar en otra máquina:
 
@@ -65,9 +68,23 @@ cmake --build build --config Release
 
 ## Por qué estas decisiones de rendimiento
 
-- **Buffer de 1024 samples**: prioriza estabilidad sobre latencia. Para
-  presentaciones (reproducir pistas ya armadas) no hace falta baja
-  latencia de grabación.
+- **Buffer chico por defecto (auto-detectado, con piso de 256 si no hay
+  info del dispositivo)**: antes estaba fijo en 1024 muestras
+  (~23ms), pensado solo para reproducir pistas ya armadas. Se cambió a
+  baja latencia porque ahora la app también sirve para tocar un teclado
+  MIDI en vivo o monitorear un efecto en tiempo real, donde 23ms se
+  siente como un delay molesto. El botón "Audio/MIDI..." deja ajustarlo
+  a mano (y elegir qué entradas MIDI están activas) si hace falta
+  compensar con más estabilidad en un CPU muy limitado.
+- **MIDI en vivo**: `AudioEngine` recolecta los mensajes de cualquier
+  entrada MIDI habilitada con `juce::MidiMessageCollector` y se los
+  pasa a cada plugin de canal en cada bloque de audio, toque o no el
+  transporte — así un instrumento VST3 responde al teclado sin
+  necesidad de tener nada en la playlist.
+- **Sin alocación de memoria en el callback de audio**: el buffer
+  intermedio por canal se reserva una sola vez (`prepareToPlay`) y se
+  reutiliza; alocar en el hilo de audio es una causa clásica de
+  clics/xruns, y se nota mucho más cuanto más bajo es el buffer.
 - **Sin waveforms renderizadas**: evita procesar/cachear miles de
   samples solo para pintar la UI.
 - **Escaneo de plugins manual**: no se escanea al abrir la app, para no
