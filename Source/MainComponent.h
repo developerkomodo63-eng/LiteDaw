@@ -9,7 +9,10 @@
 /**
     Ventana principal: arriba la playlist (timeline de pistas/clips),
     abajo el mixer. El audio real corre a través de AudioEngine, que se
-    conecta al hardware con un juce::AudioSourcePlayer.
+    registra directo como juce::AudioIODeviceCallback del dispositivo
+    (no vía juce::AudioSourcePlayer) para poder tener acceso a la
+    entrada real de la interfaz y así alimentar el input en vivo de
+    cada canal del mixer.
 */
 class MainComponent : public juce::Component,
                        private juce::Timer
@@ -25,7 +28,6 @@ private:
     void timerCallback() override;
 
     juce::AudioDeviceManager deviceManager;
-    juce::AudioSourcePlayer audioSourcePlayer;
 
     PluginHost pluginHost;
     AudioEngine audioEngine;

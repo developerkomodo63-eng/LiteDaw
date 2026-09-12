@@ -28,6 +28,7 @@ public:
 private:
     void showPluginMenu();
     void unloadPlugin();
+    void showInputMenu();
 
     PluginHost& pluginHost;
     AudioEngine& audioEngine;
@@ -38,6 +39,7 @@ private:
     juce::TextButton muteButton { "M" };
     juce::TextButton soloButton { "S" };
     juce::TextButton pluginSlotButton { "(vacío)" };
+    juce::TextButton inputSlotButton { "In: -" };
     juce::Label nameLabel;
 
     std::unique_ptr<juce::AudioPluginInstance> pluginInstance;

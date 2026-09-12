@@ -3,13 +3,18 @@
 MainComponent::MainComponent()
     : mixer(pluginHost, audioEngine)
 {
-    deviceManager.initialiseWithDefaultDevices(0, 2);
+    // Pedimos entrada de audio (antes era 0 in / 2 out): sin esto la
+    // interfaz nunca entrega señal de entrada, sin importar qué tan
+    // bajo esté el buffer. Si la interfaz tiene más de 2 entradas, se
+    // pueden habilitar el resto desde "Audio/MIDI...".
+    deviceManager.initialiseWithDefaultDevices(2, 2);
     configureLowLatencyDefaults();
     enableAllMidiInputs();
 
-    // Conecta el motor real al hardware de audio.
-    audioSourcePlayer.setSource(&audioEngine);
-    deviceManager.addAudioCallback(&audioSourcePlayer);
+    // AudioEngine se registra directo como callback del dispositivo (no
+    // vía AudioSourcePlayer): así tiene acceso al buffer de entrada real
+    // de la interfaz, necesario para meter esa señal a un canal del mixer.
+    deviceManager.addAudioCallback(&audioEngine);
 
     addAndMakeVisible(playlist);
     playlist.onClipsChanged = [this] { audioEngine.setClips(playlist.getClips()); };
@@ -54,8 +59,7 @@ MainComponent::MainComponent()
 MainComponent::~MainComponent()
 {
     stopTimer();
-    audioSourcePlayer.setSource(nullptr);
-    deviceManager.removeAudioCallback(&audioSourcePlayer);
+    deviceManager.removeAudioCallback(&audioEngine);
 
     // Sacar los callbacks MIDI antes de que audioEngine se destruya (el
     // orden de destrucción de miembros deja a audioEngine morir antes que
@@ -155,8 +159,8 @@ void MainComponent::openAudioSettings()
     // app, sin tener que tocar código para bajar más la latencia.
     auto* selector = new juce::AudioDeviceSelectorComponent(
         deviceManager,
-        0, 2,     // canales de entrada de audio (min/max)
-        0, 2,     // canales de salida de audio (min/max)
+        0, 16,    // canales de entrada de audio (min/max) — interfaces multicanal
+        0, 16,    // canales de salida de audio (min/max)
         true,     // mostrar selector de entradas MIDI
         false,    // mostrar selector de salidas MIDI
         true,     // mostrar canales como pares estéreo

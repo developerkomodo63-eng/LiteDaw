@@ -37,6 +37,10 @@ MixerChannel::MixerChannel(juce::String name, int index, PluginHost& host, Audio
     pluginSlotButton.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff3a3a3a));
     pluginSlotButton.onClick = [this] { showPluginMenu(); };
     addAndMakeVisible(pluginSlotButton);
+
+    inputSlotButton.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff2f3a3a));
+    inputSlotButton.onClick = [this] { showInputMenu(); };
+    addAndMakeVisible(inputSlotButton);
 }
 
 void MixerChannel::paint(juce::Graphics& g)
@@ -58,7 +62,10 @@ void MixerChannel::resized()
 {
     auto area = getLocalBounds().reduced(4);
     nameLabel.setBounds(area.removeFromTop(18));
-    pluginSlotButton.setBounds(area.removeFromTop(22));
+
+    auto slotRow = area.removeFromTop(22);
+    inputSlotButton.setBounds(slotRow.removeFromLeft(slotRow.getWidth() / 2).reduced(1));
+    pluginSlotButton.setBounds(slotRow.reduced(1));
 
     auto buttonsRow = area.removeFromBottom(22);
     muteButton.setBounds(buttonsRow.removeFromLeft(buttonsRow.getWidth() / 2).reduced(1));
@@ -147,6 +154,44 @@ void MixerChannel::unloadPlugin()
     pluginInstance.reset();
     pluginSlotButton.setButtonText("(vacío)");
     audioEngine.setChannelPlugin(channelIndex, nullptr);
+}
+
+void MixerChannel::showInputMenu()
+{
+    // Se puebla al momento de abrir el menú (no en el constructor) para
+    // reflejar la interfaz de audio actual: si el usuario la cambió desde
+    // "Audio/MIDI...", la cantidad de entradas puede haber cambiado.
+    const int numInputs = audioEngine.getNumHardwareInputChannels();
+
+    juce::PopupMenu menu;
+    menu.addItem(1, "Ninguna (sin entrada en vivo)");
+
+    if (numInputs == 0)
+    {
+        menu.addItem(2, "La interfaz actual no tiene entradas activas"
+                         " — revisá \"Audio/MIDI...\"", false);
+    }
+    else
+    {
+        for (int i = 0; i < numInputs; ++i)
+            menu.addItem(i + 100, "Entrada " + juce::String(i + 1));
+    }
+
+    menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(inputSlotButton),
+        [this](int result)
+        {
+            if (result == 1)
+            {
+                audioEngine.setChannelInput(channelIndex, -1);
+                inputSlotButton.setButtonText("In: -");
+            }
+            else if (result >= 100)
+            {
+                const int hardwareChannel = result - 100;
+                audioEngine.setChannelInput(channelIndex, hardwareChannel);
+                inputSlotButton.setButtonText("In: " + juce::String(hardwareChannel + 1));
+            }
+        });
 }
 
 // ------------------------------------------------------------------ Mixer

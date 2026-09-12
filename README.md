@@ -8,13 +8,22 @@ bien en hardware débil (target: HP Stream 14).
 Ya tiene un motor de audio real, no solo UI de maqueta:
 
 - **`AudioEngine`**: mezcla los clips de audio cargados (leídos desde
-  disco, respetando su posición en el tiempo), los pasa por el plugin
-  VST3 del canal si tiene uno cargado, aplica gain/mute/solo, y calcula
-  un nivel RMS real para los meters.
+  disco, respetando su posición en el tiempo), suma la entrada en vivo
+  de la interfaz de audio si el canal tiene una asignada, pasa todo por
+  el plugin VST3 del canal si tiene uno cargado, aplica gain/mute/solo,
+  y calcula un nivel RMS real para los meters. Es un
+  `juce::AudioIODeviceCallback` directo (no un `AudioSource` vía
+  `AudioSourcePlayer`) justo para poder leer la entrada real del
+  hardware.
+- **Entrada de la interfaz por canal**: botón "In:" en cada canal del
+  mixer — deja elegir qué entrada física de la interfaz de audio (mic,
+  guitarra, etc.) alimenta ese canal en vivo, sumada a lo que venga de
+  la playlist. Se puebla desde `AudioEngine::getNumHardwareInputChannels()`,
+  que sigue lo que esté activo en "Audio/MIDI...".
 - **Playlist**: doble click sobre una pista abre un selector de archivo;
   el clip se agrega con el largo real del audio.
-- **Mixer**: fader/mute/solo/plugin de cada canal actúan en vivo sobre
-  el `AudioEngine` (no son solo controles visuales).
+- **Mixer**: fader/mute/solo/plugin/input de cada canal actúan en vivo
+  sobre el `AudioEngine` (no son solo controles visuales).
 - **Botón "+ Pista"**: agrega pista + canal de mixer en simultáneo (van
   1:1 por índice).
 - **Cargar/quitar plugin por canal**: click en el slot de plugin de
@@ -45,6 +54,11 @@ Ya tiene un motor de audio real, no solo UI de maqueta:
    gain/mute/solo del mixer (ver arriba, es intencional).
 4. **Sin waveform dibujada**: los clips se ven como bloques de color,
    deliberado para no gastar CPU dibujando/cacheando miles de samples.
+5. **El input asignado por canal no se guarda en el proyecto** (`.litedaw`
+   solo guarda pistas/clips y gain/mute/solo, ver arriba) — después de
+   abrir un proyecto hay que reasignar la entrada de interfaz a mano.
+6. **Entrada mono por canal**: el selector de input asigna un solo canal
+   físico de la interfaz por canal del mixer (no pares estéreo todavía).
 
 ## Cómo compilar
 
