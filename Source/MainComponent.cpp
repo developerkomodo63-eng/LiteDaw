@@ -20,6 +20,7 @@ MainComponent::MainComponent()
     // DirectSound en vez de WASAPI exclusivo, o compilar con soporte ASIO
     // -ver CMakeLists.txt- si el usuario tiene un driver ASIO instalado).
     selectLowestLatencyDeviceType();
+    preferAudioInterfaceDevice();
     configureLowLatencyDefaults();
     enableAllMidiInputs();
 
@@ -206,6 +207,91 @@ void MainComponent::selectLowestLatencyDeviceType()
             }
         }
     }
+}
+
+void MainComponent::preferAudioInterfaceDevice()
+{
+    // Se llama UNA sola vez al arrancar, después de elegir el tipo de
+    // driver (ASIO/WASAPI/etc.) y antes de que el usuario haya tocado
+    // nada a mano: si hay conectada una interfaz de audio dedicada (una
+    // Focusrite Scarlett/Clarett, RME, PreSonus, MOTU, etc.) la preferimos
+    // sobre el audio integrado del laptop (Realtek, "Speakers", el mic
+    // interno) — mejores conversores, mejor latencia real, y es lo que un
+    // músico que enchufa su interfaz espera que la app use sin tener que
+    // ir a buscarla a mano en "Audio/MIDI...". Si el usuario después
+    // cambia el dispositivo manualmente, esa elección queda como está:
+    // esta función no vuelve a pisarla.
+    auto* currentType = deviceManager.getCurrentDeviceTypeObject();
+    if (currentType == nullptr)
+        return;
+
+    currentType->scanForDevices();
+
+    // Nombres típicos de interfaces de audio reales conocidas. No hace
+    // falta que la lista sea exhaustiva: si no matchea nada, simplemente
+    // se deja lo que JUCE haya elegido por defecto.
+    static const char* interfaceMarkers[] =
+    {
+        "Focusrite", "Scarlett", "Clarett", "Vocaster",
+        "RME", "Fireface", "Babyface",
+        "PreSonus", "AudioBox", "Quantum",
+        "MOTU", "Zoom", "Behringer", "UMC",
+        "Universal Audio", "Apollo",
+        "Audient", "SSL", "Steinberg", "UR22", "UR44",
+        "Native Instruments", "Komplete Audio"
+    };
+
+    // Wrappers/drivers genéricos: nunca se prefieren, aunque su nombre
+    // coincida por accidente con algún marcador de arriba (ej. un
+    // "ASIO4ALL" configurado sobre una Focusrite igual aparece con el
+    // nombre genérico, no con "Focusrite").
+    static const char* genericMarkers[] = { "ASIO4ALL", "Generic Low Latency" };
+
+    auto findBestMatch = [&](const juce::StringArray& names) -> juce::String
+    {
+        for (auto& name : names)
+        {
+            bool isGeneric = false;
+            for (auto* g : genericMarkers)
+                if (name.containsIgnoreCase(g))
+                    isGeneric = true;
+            if (isGeneric)
+                continue;
+
+            for (auto* marker : interfaceMarkers)
+                if (name.containsIgnoreCase(marker))
+                    return name;
+        }
+        return {};
+    };
+
+    // Se buscan por separado (en vez de asumir el mismo nombre para
+    // ambos): en ASIO un solo driver maneja entrada y salida y va a dar
+    // el mismo nombre en las dos listas, pero en WASAPI son dispositivos
+    // separados y podrían no coincidir exactamente en texto.
+    const auto bestOutput = findBestMatch(currentType->getDeviceNames(false));
+    const auto bestInput  = findBestMatch(currentType->getDeviceNames(true));
+
+    if (bestOutput.isEmpty() && bestInput.isEmpty())
+        return; // no hay ninguna interfaz conocida conectada; se deja lo que ya eligió JUCE
+
+    juce::AudioDeviceManager::AudioDeviceSetup setup;
+    deviceManager.getAudioDeviceSetup(setup);
+
+    bool changed = false;
+    if (bestOutput.isNotEmpty() && setup.outputDeviceName != bestOutput)
+    {
+        setup.outputDeviceName = bestOutput;
+        changed = true;
+    }
+    if (bestInput.isNotEmpty() && setup.inputDeviceName != bestInput)
+    {
+        setup.inputDeviceName = bestInput;
+        changed = true;
+    }
+
+    if (changed)
+        deviceManager.setAudioDeviceSetup(setup, true);
 }
 
 void MainComponent::configureLowLatencyDefaults()

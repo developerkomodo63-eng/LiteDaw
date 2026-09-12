@@ -89,6 +89,39 @@ cmake -B build -G "Visual Studio 17 2022" -A x64
 cmake --build build --config Release
 ```
 
+## Usar una interfaz de audio dedicada (ASIO / Focusrite, etc.)
+
+Si tocás en vivo con una interfaz de audio real (Focusrite Scarlett,
+Clarett, Vocaster, o cualquier otra marca), esto es lo que conviene
+tener instalado para que LiteDAW la agarre automáticamente con la menor
+latencia posible:
+
+1. **Instalá el driver oficial del fabricante**, no uses solo el genérico
+   de Windows. Para Focusrite: instalá **Focusrite Control** (interfaces
+   más viejas) o **Focusrite Control 2** (Scarlett 4ta gen en adelante)
+   desde el sitio de Focusrite — eso instala el driver ASIO nativo
+   ("Focusrite USB ASIO"), que es muchísimo mejor que dejar que Windows
+   la maneje como dispositivo genérico WASAPI.
+2. **Conectá la interfaz antes de abrir LiteDAW.** Al arrancar, la app:
+   - Elige el driver de menor latencia disponible (ASIO si la app se
+     compiló con soporte, ver abajo; si no, WASAPI exclusivo).
+   - Dentro de ese driver, busca por nombre tu interfaz (Focusrite,
+     Scarlett, RME, etc.) y la selecciona sola en vez del audio
+     integrado del laptop.
+   - Si más tarde la cambiás a mano en "Audio/MIDI...", esa elección
+     queda (la selección automática es solo al arrancar).
+3. **Para tener ASIO disponible en el build** (mejor que WASAPI
+   exclusivo): el SDK de ASIO es de Steinberg y su licencia no permite
+   redistribuirlo en este repo. Descargalo de
+   https://www.steinberg.net/developers/, descomprimilo en
+   `ThirdParty/ASIOSDK` (junto al `CMakeLists.txt`), y volvé a correr
+   cmake — se detecta solo y compila con `JUCE_ASIO=1`. Sin el SDK, la
+   app compila y anda igual, solo que usa WASAPI en vez de ASIO.
+4. Podés confirmar que quedó bien mirando la etiqueta de latencia en la
+   barra de herramientas: debería decir "ASIO" (o "Windows Audio
+   (Exclusive Mode)") y el nombre de tu interfaz en el selector de
+   "Audio/MIDI...", no "Realtek" ni "Speakers".
+
 ## Por qué estas decisiones de rendimiento
 
 - **Tipo de driver de audio de menor latencia disponible, elegido solo**:
@@ -99,6 +132,18 @@ cmake --build build --config Release
   operativos). WASAPI compartido/DirectSound pasan el audio por el
   mezclador del sistema operativo, que agrega sus propios buffers extra
   por encima del nuestro — el modo exclusivo (o ASIO) evita eso.
+- **Selección automática de la interfaz de audio, si hay una conectada**:
+  `preferAudioInterfaceDevice()` corre una sola vez al arrancar (antes de
+  que el usuario toque nada) y, dentro del tipo de driver ya elegido,
+  busca por nombre una interfaz dedicada conocida (Focusrite
+  Scarlett/Clarett/Vocaster, RME, PreSonus, MOTU, Behringer UMC,
+  Universal Audio, Audient, Steinberg, Native Instruments, etc.) y la
+  prefiere sobre el audio integrado del laptop (Realtek, "Speakers", el
+  mic interno). Ignora a propósito wrappers genéricos como "ASIO4ALL" —
+  aunque estén envolviendo esa misma interfaz, un driver nativo real
+  (cuando existe) da mejor latencia y estabilidad. Si el usuario cambia
+  el dispositivo a mano después desde "Audio/MIDI...", esa elección
+  queda como está — esta función no la vuelve a pisar.
 - **Indicador de latencia real en la barra de herramientas**: muestra el
   tipo de driver activo y una estimación en ms (buffer + latencia de
   entrada/salida que reporte el propio driver), para poder confirmar de

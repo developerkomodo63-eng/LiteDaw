@@ -55,6 +55,7 @@ private:
     void saveProject();
     void loadProject();
     void selectLowestLatencyDeviceType();
+    void preferAudioInterfaceDevice();
     void configureLowLatencyDefaults();
     void enableAllMidiInputs();
     void openAudioSettings();
