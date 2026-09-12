@@ -2,7 +2,13 @@
 
 PluginHost::PluginHost()
 {
-    formatManager.addDefaultFormats(); // registra VST3 (y AU en mac, etc.)
+    // AudioPluginFormatManager::addDefaultFormats() ya no existe (JUCE la
+    // marcó "=delete" al partir el hosting de plugins en una variante con
+    // soporte de UI y otra "headless" sin editor de plugin). Como el plan
+    // es eventualmente abrir el editor nativo del VST3 (ver limitación en
+    // el README), usamos la función libre con soporte de UI en vez de la
+    // headless (que dejaría hasEditor()==false siempre).
+    juce::addDefaultFormatsToManager(formatManager); // registra VST3 (y AU en mac, etc.)
 }
 
 void PluginHost::scanForVST3Plugins(PluginFoundCallback onFound)
