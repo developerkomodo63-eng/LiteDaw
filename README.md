@@ -93,6 +93,32 @@ cmake -B build -G "Visual Studio 17 2022" -A x64
 cmake --build build --config Release
 ```
 
+## Escaneo de plugins a prueba de crashes
+
+Leer la descripción de un VST3 requiere cargar su binario en el mismo
+proceso de LiteDAW — no hay sandbox, como en la mayoría de los hosts
+livianos. Si tenés un plugin corrupto o incompatible instalado, puede
+crashear **toda la aplicación** a mitad del escaneo (esto no es algo que
+un `try/catch` de C++ pueda evitar: un crash nativo no es una excepción
+de C++, es el sistema operativo matando el proceso).
+
+Para que esto no te deje reescaneando -y recrasheando con- el mismo
+plugin cada vez:
+
+1. Justo antes de leer cada plugin, LiteDAW escribe su ruta en un
+   archivo de estado en disco.
+2. Si el escaneo termina bien, ese archivo se borra.
+3. Si la próxima vez que abrís LiteDAW ese archivo sigue ahí, quiere
+   decir que el proceso se cortó justo en ese plugin — se agrega
+   automáticamente a una lista negra persistente y se lo saltea en
+   todos los escaneos futuros, avisándote cuál era.
+
+Si un "crash" en realidad fue otra cosa (por ejemplo Windows cerrando
+todo por una actualización) y querés reintentar un plugin que quedó en
+la lista negra, borrá el archivo `plugins_bloqueados.txt` de:
+`%APPDATA%/LiteDAW/` en Windows (o la carpeta equivalente de datos de
+usuario en Mac/Linux).
+
 ## Usar una interfaz de audio dedicada (ASIO / Focusrite, etc.)
 
 Si tocás en vivo con una interfaz de audio real (Focusrite Scarlett,
@@ -125,6 +151,18 @@ latencia posible:
    barra de herramientas: debería decir "ASIO" (o "Windows Audio
    (Exclusive Mode)") y el nombre de tu interfaz en el selector de
    "Audio/MIDI...", no "Realtek" ni "Speakers".
+5. **¿Conectaste la interfaz DESPUÉS de abrir LiteDAW?** La detección
+   automática solo corre una vez, al arrancar la app. Usá el botón
+   "Re-detectar interfaz" de la barra de herramientas para volver a
+   correrla sin tener que cerrar y reabrir — es la causa más común de
+   "no me detecta la interfaz" si a mitad de la sesión conectaste el
+   cable USB.
+6. Si después de eso seguís sin verla ni siquiera abriendo
+   "Audio/MIDI..." a mano (o sea, ni aparece en la lista de
+   dispositivos de Windows Audio), el problema es de driver/Windows, no
+   de LiteDAW: confirmá en el Administrador de dispositivos de Windows
+   que la interfaz aparece sin signos de exclamación, y que Focusrite
+   Control (o el software de tu interfaz) la reconoce.
 
 ## Por qué estas decisiones de rendimiento
 

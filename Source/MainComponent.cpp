@@ -63,6 +63,20 @@ MainComponent::MainComponent()
     addAndMakeVisible(audioSettingsButton);
     audioSettingsButton.onClick = [this] { openAudioSettings(); };
 
+    addAndMakeVisible(redetectInterfaceButton);
+    redetectInterfaceButton.onClick = [this]
+    {
+        // Por si el usuario conectó su interfaz de audio DESPUÉS de abrir
+        // LiteDAW: la detección automática (selectLowestLatencyDeviceType +
+        // preferAudioInterfaceDevice) solo corre una vez, al arrancar.
+        // Este botón la vuelve a correr a pedido, sin tener que cerrar y
+        // reabrir la app.
+        selectLowestLatencyDeviceType();
+        preferAudioInterfaceDevice();
+        configureLowLatencyDefaults();
+        updateLatencyLabel();
+    };
+
     latencyLabel.setJustificationType(juce::Justification::centredRight);
     latencyLabel.setFont(juce::Font(12.0f));
     latencyLabel.setColour(juce::Label::textColourId, juce::Colours::lightgrey);
@@ -114,6 +128,9 @@ void MainComponent::resized()
     openButton.setBounds(toolbar.removeFromLeft(80));
     toolbar.removeFromLeft(12);
     audioSettingsButton.setBounds(toolbar.removeFromLeft(110));
+
+    toolbar.removeFromLeft(8);
+    redetectInterfaceButton.setBounds(toolbar.removeFromLeft(150));
 
     latencyLabel.setBounds(toolbar);
 
@@ -375,15 +392,32 @@ void MainComponent::scanForPlugins()
     // pesada de arrancar/usar, justo lo opuesto a "ultra liviano").
     // Cada canal elige su plugin con un click en su propio slot.
     int foundCount = 0;
-    pluginHost.scanForVST3Plugins([&foundCount](const juce::PluginDescription&) { ++foundCount; });
+    juce::StringArray skipped;
+
+    pluginHost.scanForVST3Plugins(
+        [&foundCount](const juce::PluginDescription&) { ++foundCount; },
+        [&skipped](const juce::String& filePath) { skipped.add(filePath); });
+
+    juce::String message;
+    message << (foundCount > 0
+        ? "Se encontraron " + juce::String(foundCount)
+              + " plugin(s) VST3. Click en el slot de un canal para asignarle uno."
+        : "No se encontraron plugins VST3 nuevos en las rutas por defecto.");
+
+    if (!skipped.isEmpty())
+    {
+        // Si alguno de estos venía de un crash real de la app en un
+        // escaneo anterior (no de una lista negra vieja), avisamos fuerte:
+        // es información importante, no un detalle menor.
+        message << "\n\nSe saltearon " << skipped.size()
+                << " plugin(s) que hicieron cerrar la app en un escaneo anterior "
+                   "(quedaron en una lista negra para no volver a intentarlos):\n"
+                << skipped.joinIntoString("\n");
+    }
 
     juce::AlertWindow::showMessageBoxAsync(
-        juce::AlertWindow::InfoIcon,
-        "Escaneo de plugins",
-        foundCount > 0
-            ? "Se encontraron " + juce::String(foundCount)
-                  + " plugin(s) VST3. Click en el slot de un canal para asignarle uno."
-            : "No se encontraron plugins VST3 instalados en las rutas por defecto.");
+        skipped.isEmpty() ? juce::AlertWindow::InfoIcon : juce::AlertWindow::WarningIcon,
+        "Escaneo de plugins", message);
 }
 
 void MainComponent::addTrackNamed(const juce::String& name)

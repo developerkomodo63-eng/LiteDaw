@@ -44,6 +44,7 @@ private:
     juce::TextButton saveButton        { "Guardar" };
     juce::TextButton openButton        { "Abrir" };
     juce::TextButton audioSettingsButton { "Audio/MIDI..." };
+    juce::TextButton redetectInterfaceButton { "Re-detectar interfaz" };
     juce::Label latencyLabel;
 
     std::unique_ptr<juce::FileChooser> fileChooser;
